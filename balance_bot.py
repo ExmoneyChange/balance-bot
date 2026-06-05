@@ -473,6 +473,18 @@ async def set_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Полная очистка группы"""
+    chat_id = update.effective_chat.id
+    groups = load_groups()
+    if str(chat_id) in groups:
+        del groups[str(chat_id)]
+        save_groups(groups)
+    await update.message.reply_text(
+        "✅ Группа очищена!\nТеперь настройте заново: /setup limits / turnover / currency",
+        parse_mode="Markdown"
+    )
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🤖 *Команды бота:*\n\n"
@@ -518,6 +530,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(TOKEN).build()
 
+    app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("setup", setup_command))
