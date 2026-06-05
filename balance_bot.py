@@ -11,6 +11,9 @@ TOKEN = "8365170231:AAHM2Z0V0kgR_QDiFqegwb0fC_dSHAd5r2o"
 
 GROUPS_FILE = "/app/data/groups.json"
 
+# Создаём папку если не существует
+os.makedirs("/app/data", exist_ok=True)
+
 MODE_LIMITS = "limits"
 MODE_TURNOVER = "turnover"
 MODE_CURRENCY = "currency"
