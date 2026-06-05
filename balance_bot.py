@@ -194,8 +194,8 @@ async def handle_turnover_mode(update, text, group, accounts, chat_id):
     sign_match = re.match(r'^([+-])\s*', text)
     leading_sign = sign_match.group(1) if sign_match else None
 
-    pattern = r'([\wа-яёА-ЯЁ]+)\s*([+-]?\s*\d+)|([+-]?\s*\d+)\s*([\wа-яёА-ЯЁ]+)'
-    match = re.search(pattern, text, re.IGNORECASE)
+    pattern = r'([а-яёА-ЯЁ\w]{1,})\s*([+-]?\s*\d+)|([+-]?\s*\d+)\s*([а-яёА-ЯЁ\w]{1,})'
+    match = re.search(pattern, text, re.IGNORECASE | re.UNICODE)
     if not match:
         return
 
