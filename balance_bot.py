@@ -6,7 +6,6 @@ import json
 import os
 from datetime import time
 
-# Токен бота
 TOKEN = "8365170231:AAHM2Z0V0kgR_QDiFqegwb0fC_dSHAd5r2o"
 
 GROUPS_FILE = "/app/data/groups.json"
@@ -43,6 +42,13 @@ def format_number(n):
 def format_usd(n):
     return f"{n:,.2f}".replace(",", " ")
 
+def parse_amount(text):
+    """Парсит число из текста, поддерживает '- 25000', '-25000', '+ 25000'"""
+    text = text.strip()
+    # Убираем пробелы между знаком и числом
+    text = re.sub(r'([+-])\s+(\d)', r'\1\2', text)
+    return int(text.replace(" ", ""))
+
 def get_balance_text(group):
     mode = group.get("mode", MODE_LIMITS)
     accounts = group.get("accounts", {})
@@ -74,7 +80,7 @@ def get_balance_text(group):
         rate_yuan = group.get("rate_yuan", 0)
         text = (
             f"💵 *Баланс USD:* `{format_usd(bal_usd)}` $\n\n"
-            f"📈 Курс грн: `{rate_uah}` грн/$ \n"
+            f"📈 Курс грн: `{rate_uah}` грн/$\n"
             f"📈 Курс юань: `{rate_yuan}` юань/$"
         )
 
@@ -110,8 +116,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_currency_mode(update, text, group, chat_id)
 
 async def handle_limits_mode(update, text, group, accounts, chat_id):
-    pattern = r'([+-]?\d+)\s+([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)|' \
-              r'([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)\s+([+-]?\d+)'
+    # Поддерживаем: "- Артем моно 25000", "-25000 Приват Кристина", "Приват Кристина -25000"
+    # Сначала ищем знак в начале сообщения
+    sign_match = re.match(r'^([+-])\s*', text)
+    leading_sign = sign_match.group(1) if sign_match else None
+    
+    # Паттерн для поиска числа и двух слов
+    pattern = r'([+-]?\s*\d+)\s+([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)|' \
+              r'([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)\s+([+-]?\s*\d+)'
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return
@@ -121,7 +133,16 @@ async def handle_limits_mode(update, text, group, accounts, chat_id):
     else:
         word1, word2, amount_str = match.group(4), match.group(5), match.group(6)
 
-    amount = int(amount_str)
+    # Если знак был в начале сообщения но не прилип к числу
+    amount_str = amount_str.strip()
+    if leading_sign and not amount_str.startswith(('+', '-')):
+        amount_str = leading_sign + amount_str
+
+    try:
+        amount = parse_amount(amount_str)
+    except:
+        return
+
     persons = list(accounts.keys())
     banks_all = list(set(b for p in persons for b in accounts[p].keys()))
 
@@ -169,17 +190,28 @@ async def handle_limits_mode(update, text, group, accounts, chat_id):
     )
 
 async def handle_turnover_mode(update, text, group, accounts, chat_id):
-    pattern = r'([\wа-яёА-ЯЁ]+)\s+([+-]?\d+)|([+-]?\d+)\s+([\wа-яёА-ЯЁ]+)'
+    # Поддерживаем: "МС +11600", "МС+11600", "МС -11600", "- МС 11600", "+11600 МС"
+    sign_match = re.match(r'^([+-])\s*', text)
+    leading_sign = sign_match.group(1) if sign_match else None
+
+    pattern = r'([\wа-яёА-ЯЁ]+)\s*([+-]?\s*\d+)|([+-]?\s*\d+)\s*([\wа-яёА-ЯЁ]+)'
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return
 
     if match.group(1):
-        name, amount_str = match.group(1), match.group(2)
+        name, amount_str = match.group(1), match.group(2).strip()
     else:
-        amount_str, name = match.group(3), match.group(4)
+        amount_str, name = match.group(3).strip(), match.group(4)
 
-    amount = int(amount_str)
+    if leading_sign and not amount_str.startswith(('+', '-')):
+        amount_str = leading_sign + amount_str
+
+    try:
+        amount = parse_amount(amount_str)
+    except:
+        return
+
     found_name = None
     for acc_name in accounts.keys():
         if acc_name.lower() == name.lower():
@@ -213,20 +245,23 @@ async def handle_turnover_mode(update, text, group, accounts, chat_id):
     )
 
 async def handle_currency_mode(update, text, group, chat_id):
-    # Форматы:
-    # +30000 грн  — пополнение гривной (конвертация в USD)
-    # -65762 юань — списание юанем (конвертация в USD)
-    # +500 usd    — прямое пополнение USD
-    # -500 usd    — прямое списание USD
-
-    pattern = r'([+-]?\d+(?:\.\d+)?)\s*(грн|юань|usd|USD|\$)'
+    pattern = r'([+-]?\s*\d+(?:\.\d+)?)\s*(грн|юань|usd|USD|\$)'
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return
 
-    amount_str = match.group(1)
+    amount_str = match.group(1).replace(" ", "")
     currency = match.group(2).lower()
-    amount = float(amount_str)
+
+    # Знак в начале сообщения
+    sign_match = re.match(r'^([+-])\s*', text)
+    if sign_match and not amount_str.startswith(('+', '-')):
+        amount_str = sign_match.group(1) + amount_str
+
+    try:
+        amount = float(amount_str)
+    except:
+        return
 
     rate_uah = group.get("rate_uah", 0)
     rate_yuan = group.get("rate_yuan", 0)
@@ -234,23 +269,19 @@ async def handle_currency_mode(update, text, group, chat_id):
 
     if currency == "грн":
         if rate_uah == 0:
-            await update.message.reply_text("❌ Курс гривны не установлен! Используйте `/setrate 44.45`", parse_mode="Markdown")
+            await update.message.reply_text("❌ Курс гривны не установлен! `/setrate 44.45`", parse_mode="Markdown")
             return
         usd_amount = amount / rate_uah
-        currency_label = f"{format_number(int(amount))} грн по курсу {rate_uah}"
+        currency_label = f"{format_number(int(abs(amount)))} грн по курсу {rate_uah}"
     elif currency == "юань":
         if rate_yuan == 0:
-            await update.message.reply_text("❌ Курс юаня не установлен! Используйте `/setrate yuan 6.63`", parse_mode="Markdown")
+            await update.message.reply_text("❌ Курс юаня не установлен! `/setrate yuan 6.63`", parse_mode="Markdown")
             return
         usd_amount = amount / rate_yuan
-        currency_label = f"{format_number(int(amount))} юань по курсу {rate_yuan}"
+        currency_label = f"{format_number(int(abs(amount)))} юань по курсу {rate_yuan}"
     else:
         usd_amount = amount
         currency_label = f"{format_usd(abs(amount))} USD"
-
-    # Если сумма отрицательная — списание
-    if amount < 0:
-        usd_amount = -abs(usd_amount)
 
     new_bal = old_bal + usd_amount
     group["balance_usd"] = new_bal
@@ -269,7 +300,6 @@ async def handle_currency_mode(update, text, group, chat_id):
     )
 
 async def setrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить курс: /setrate 44.45 или /setrate yuan 6.63"""
     chat_id = update.effective_chat.id
     group = get_group(chat_id)
     if not group or group.get("mode") != MODE_CURRENCY:
@@ -278,31 +308,28 @@ async def setrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Формат:\n`/setrate 44.45` — курс гривны\n`/setrate yuan 6.63` — курс юаня",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("Формат:\n`/setrate 44.45` — курс гривны\n`/setrate yuan 6.63` — курс юаня", parse_mode="Markdown")
         return
 
     if args[0].lower() == "yuan":
         rate = float(args[1])
         group["rate_yuan"] = rate
         save_group(chat_id, group)
-        await update.message.reply_text(f"✅ Курс юаня установлен: `{rate}` юань/$", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Курс юаня: `{rate}` юань/$", parse_mode="Markdown")
     else:
         rate = float(args[0])
         group["rate_uah"] = rate
         save_group(chat_id, group)
-        await update.message.reply_text(f"✅ Курс гривны установлен: `{rate}` грн/$", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Курс гривны: `{rate}` грн/$", parse_mode="Markdown")
 
 async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args or args[0] not in ["limits", "turnover", "currency"]:
         await update.message.reply_text(
-            "Выберите режим группы:\n\n"
+            "Выберите режим:\n\n"
             "/setup limits — балансы с лимитами\n"
             "/setup turnover — балансы с оборотом\n"
-            "/setup currency — баланс в USD с конвертацией",
+            "/setup currency — баланс в USD",
             parse_mode="Markdown"
         )
         return
@@ -319,15 +346,15 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group.setdefault("accounts", {})
     save_group(chat_id, group)
 
-    modes = {"limits": "лимиты", "turnover": "оборот", "currency": "USD конвертация"}
     hints = {
         "limits": "`/addperson Имя`\nЗатем: `/addbank Имя Банк Лимит`",
         "turnover": "`/addaccount МТ 66740`",
         "currency": "`/setrate 44.45` — курс гривны\n`/setrate yuan 6.63` — курс юаня"
     }
+    modes = {"limits": "лимиты", "turnover": "оборот", "currency": "USD конвертация"}
 
     await update.message.reply_text(
-        f"✅ Режим установлен: *{modes[mode]}*\n\n{hints[mode]}",
+        f"✅ Режим: *{modes[mode]}*\n\n{hints[mode]}",
         parse_mode="Markdown"
     )
 
@@ -335,7 +362,7 @@ async def addperson_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     group = get_group(chat_id)
     if not group:
-        await update.message.reply_text("❌ Сначала настройте группу: /setup limits")
+        await update.message.reply_text("❌ Сначала: /setup limits")
         return
     args = context.args
     if not args:
@@ -345,7 +372,7 @@ async def addperson_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if person not in group["accounts"]:
         group["accounts"][person] = {}
         save_group(chat_id, group)
-        await update.message.reply_text(f"✅ Добавлен участник: *{person}*\nТеперь: `/addbank {person} Банк Лимит`", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Добавлен: *{person}*\nТеперь: `/addbank {person} Банк Лимит`", parse_mode="Markdown")
     else:
         await update.message.reply_text(f"Участник {person} уже есть!")
 
@@ -365,7 +392,7 @@ async def addbank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     group["accounts"][person][bank] = {"баланс": 0, "лимит": limit, "лимит_макс": limit}
     save_group(chat_id, group)
-    await update.message.reply_text(f"✅ Банк *{bank}* для *{person}*\nЛимит: `{format_number(limit)}` грн", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ {bank} для {person}\nЛимит: `{format_number(limit)}` грн", parse_mode="Markdown")
 
 async def addaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -380,7 +407,7 @@ async def addaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     balance = int(args[1]) if len(args) == 2 else 0
     group["accounts"][name] = {"баланс": balance, "оборот": 0}
     save_group(chat_id, group)
-    await update.message.reply_text(f"✅ Счёт *{name}*\nБаланс: `{format_number(balance)}` грн", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Счёт *{name}*: `{format_number(balance)}` грн", parse_mode="Markdown")
 
 async def set_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -397,7 +424,7 @@ async def set_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         old = group.get("balance_usd", 0)
         group["balance_usd"] = float(args[0])
         save_group(chat_id, group)
-        await update.message.reply_text(f"✅ Баланс USD\nБыло: `{format_usd(old)}` $ → Стало: `{format_usd(float(args[0]))}` $", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Баланс USD: `{format_usd(old)}` → `{format_usd(float(args[0]))}` $", parse_mode="Markdown")
     elif mode == MODE_LIMITS:
         if len(args) != 3:
             await update.message.reply_text("Формат: `/set Имя Банк Сумма`", parse_mode="Markdown")
@@ -462,9 +489,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setlimit Имя Банк Сумма\n"
         "/setrate 44.45 — курс гривны\n"
         "/setrate yuan 6.63 — курс юаня\n\n"
-        "*Сообщения:*\n"
-        "`-5596 Приват Кристина`\n"
-        "`МТ +23500`\n"
+        "*Форматы сообщений:*\n"
+        "`-25000 Моно Артем`\n"
+        "`- Артем Моно 25000`\n"
+        "`МС +11600`\n"
         "`+30000 грн` / `-65762 юань` / `+500 usd`\n\n"
         "🔄 Сброс 1-го числа каждого месяца"
     )
