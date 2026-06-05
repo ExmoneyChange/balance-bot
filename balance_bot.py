@@ -52,7 +52,7 @@ def get_balance_text(group):
                 default_lim = info.get("лимит_макс", lim)
                 used_pct = int(((default_lim - lim) / default_lim) * 100) if default_lim > 0 else 0
                 bar = "🟢" if used_pct < 70 else "🟡" if used_pct < 90 else "🔴"
-                text += f"  {bar} {bank}: `{format_number(bal)}` грн (лимит остаток {format_number(lim)}, {used_pct}%)\n"
+                text += f"  {bar} {bank}: `{format_number(bal)}` грн (лимит {format_number(lim)})\n"
             text += "\n"
     else:  # MODE_TURNOVER
         text = "💰 *Текущие балансы:*\n\n"
