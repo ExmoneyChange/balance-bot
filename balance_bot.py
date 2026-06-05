@@ -9,117 +9,106 @@ from datetime import time
 # Токен бота
 TOKEN = "8365170231:AAHM2Z0V0kgR_QDiFqegwb0fC_dSHAd5r2o"
 
-# Файл для хранения балансов
-DATA_FILE = "balances.json"
-LIMITS_FILE = "default_limits.json"
+# Файлы данных
+GROUPS_FILE = "groups.json"
 
-# Начальные лимиты (для сброса каждого 1-го числа)
-DEFAULT_LIMITS = {
-    "Кристина": {
-        "Приват": 350000,
-        "Пумб": 100000,
-        "Райф": 146000,
-    },
-    "Артём": {
-        "Приват": 395000,
-        "Моно": 364000,
-        "Пумб": 150000,
-    }
-}
+# Режимы групп
+MODE_LIMITS = "limits"    # Группа 1: балансы + лимиты
+MODE_TURNOVER = "turnover"  # Группа 2: балансы + оборот
 
-# Начальные данные
-DEFAULT_DATA = {
-    "Кристина": {
-        "Приват": {"баланс": 69000, "лимит": 350000},
-        "Пумб": {"баланс": 17100, "лимит": 100000},
-        "Райф": {"баланс": 119840, "лимит": 146000},
-    },
-    "Артём": {
-        "Приват": {"баланс": 111749, "лимит": 395000},
-        "Моно": {"баланс": 131431, "лимит": 364000},
-        "Пумб": {"баланс": 982, "лимит": 150000},
-    }
-}
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+def load_groups():
+    if os.path.exists(GROUPS_FILE):
+        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    save_data(DEFAULT_DATA.copy())
-    return DEFAULT_DATA.copy()
+    return {}
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def save_groups(groups):
+    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+        json.dump(groups, f, ensure_ascii=False, indent=2)
 
-def load_limits():
-    if os.path.exists(LIMITS_FILE):
-        with open(LIMITS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    save_limits(DEFAULT_LIMITS.copy())
-    return DEFAULT_LIMITS.copy()
+def get_group(chat_id):
+    groups = load_groups()
+    return groups.get(str(chat_id))
 
-def save_limits(limits):
-    with open(LIMITS_FILE, "w", encoding="utf-8") as f:
-        json.dump(limits, f, ensure_ascii=False, indent=2)
+def save_group(chat_id, data):
+    groups = load_groups()
+    groups[str(chat_id)] = data
+    save_groups(groups)
 
 def format_number(n):
     return f"{int(n):,}".replace(",", " ")
 
-def get_balance_text(data):
-    limits = load_limits()
-    text = "💰 *Текущие балансы:*\n\n"
-    for person, banks in data.items():
-        text += f"👤 *{person}:*\n"
-        for bank, info in banks.items():
+def get_balance_text(group):
+    mode = group.get("mode", MODE_LIMITS)
+    accounts = group.get("accounts", {})
+    
+    if mode == MODE_LIMITS:
+        text = "💰 *Текущие балансы:*\n\n"
+        for person, banks in accounts.items():
+            text += f"👤 *{person}:*\n"
+            for bank, info in banks.items():
+                bal = info["баланс"]
+                lim = info["лимит"]
+                default_lim = info.get("лимит_макс", lim)
+                used_pct = int(((default_lim - lim) / default_lim) * 100) if default_lim > 0 else 0
+                bar = "🟢" if used_pct < 70 else "🟡" if used_pct < 90 else "🔴"
+                text += f"  {bar} {bank}: `{format_number(bal)}` грн (лимит остаток {format_number(lim)}, {used_pct}%)\n"
+            text += "\n"
+    else:  # MODE_TURNOVER
+        text = "💰 *Текущие балансы:*\n\n"
+        for name, info in accounts.items():
             bal = info["баланс"]
-            lim = info["лимит"]
-            default_lim = limits.get(person, {}).get(bank, lim)
-            used_pct = int(((default_lim - lim) / default_lim) * 100) if default_lim > 0 else 0
-            bar = "🟢" if used_pct < 70 else "🟡" if used_pct < 90 else "🔴"
-            text += f"  {bar} {bank}: `{format_number(bal)}` грн (лимит остаток {format_number(lim)}, {used_pct}% использовано)\n"
+            turnover = info.get("оборот", 0)
+            text += f"  💳 {name}: `{format_number(bal)}` грн (оборот за месяц: {format_number(turnover)} грн)\n"
         text += "\n"
+    
     return text
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    text = get_balance_text(data)
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        await update.message.reply_text("❌ Группа не настроена. Используйте /setup")
+        return
+    text = get_balance_text(group)
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    text = update.message.text.strip()
-    data = load_data()
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        return
 
+    text = update.message.text.strip()
+    mode = group.get("mode", MODE_LIMITS)
+    accounts = group.get("accounts", {})
+
+    if mode == MODE_LIMITS:
+        await handle_limits_mode(update, text, group, accounts, chat_id)
+    else:
+        await handle_turnover_mode(update, text, group, accounts, chat_id)
+
+async def handle_limits_mode(update, text, group, accounts, chat_id):
     pattern = r'([+-]?\d+)\s+([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)|' \
               r'([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)\s+([+-]?\d+)'
-
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return
 
     if match.group(1):
-        amount_str = match.group(1)
-        word1 = match.group(2)
-        word2 = match.group(3)
+        amount_str, word1, word2 = match.group(1), match.group(2), match.group(3)
     else:
-        word1 = match.group(4)
-        word2 = match.group(5)
-        amount_str = match.group(6)
+        word1, word2, amount_str = match.group(4), match.group(5), match.group(6)
 
     amount = int(amount_str)
 
-    persons = list(data.keys())
-    banks_all = []
-    for p in persons:
-        banks_all.extend(data[p].keys())
-    banks_all = list(set(banks_all))
+    persons = list(accounts.keys())
+    banks_all = list(set(b for p in persons for b in accounts[p].keys()))
 
-    found_person = None
-    found_bank = None
-
+    found_person = found_bank = None
     for w in [word1, word2]:
         for person in persons:
             if person.lower() == w.lower():
@@ -130,35 +119,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not found_person or not found_bank:
         return
-
-    if found_bank not in data.get(found_person, {}):
+    if found_bank not in accounts.get(found_person, {}):
         await update.message.reply_text(f"❌ У {found_person} нет банка {found_bank}!")
         return
 
-    old_bal = data[found_person][found_bank]["баланс"]
-    old_lim = data[found_person][found_bank]["лимит"]
-
+    info = accounts[found_person][found_bank]
+    old_bal = info["баланс"]
+    old_lim = info["лимит"]
     new_bal = old_bal + amount
+    new_lim = max(0, old_lim + amount) if amount < 0 else old_lim
 
-    if amount < 0:
-        new_lim = max(0, old_lim + amount)
-    else:
-        new_lim = old_lim
+    accounts[found_person][found_bank]["баланс"] = new_bal
+    accounts[found_person][found_bank]["лимит"] = new_lim
+    group["accounts"] = accounts
+    save_group(chat_id, group)
 
-    data[found_person][found_bank]["баланс"] = new_bal
-    data[found_person][found_bank]["лимит"] = new_lim
-    save_data(data)
-
-    limits = load_limits()
-    default_lim = limits.get(found_person, {}).get(found_bank, old_lim)
+    default_lim = info.get("лимит_макс", old_lim)
     used_pct = int(((default_lim - new_lim) / default_lim) * 100) if default_lim > 0 else 0
     sign = "+" if amount >= 0 else ""
     bar = "🟢" if used_pct < 70 else "🟡" if used_pct < 90 else "🔴"
-
-    if amount < 0:
-        lim_line = f"📉 Лимит: `{format_number(old_lim)}` → `{format_number(new_lim)}` грн\n"
-    else:
-        lim_line = f"📊 Лимит остаток: `{format_number(new_lim)}` грн\n"
+    lim_line = f"📉 Лимит: `{format_number(old_lim)}` → `{format_number(new_lim)}` грн\n" if amount < 0 else f"📊 Лимит остаток: `{format_number(new_lim)}` грн\n"
 
     await update.message.reply_text(
         f"✅ *Обновлено!*\n"
@@ -171,108 +151,248 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🤖 *Команды бота:*\n\n"
-        "/balance — показать все балансы\n"
-        "/help — эта справка\n"
-        "/set Имя Банк Сумма — установить точный баланс\n"
-        "/setlimit Имя Банк Сумма — установить лимит (и сброс 1-го числа)\n\n"
-        "*Как обновить баланс:*\n"
-        "➕ Пополнение (только баланс):\n"
-        "`+5000 Приват Кристина`\n\n"
-        "➖ Списание (баланс и лимит):\n"
-        "`-5596 Приват Кристина`\n\n"
-        "🔄 Лимит сбрасывается 1-го числа каждого месяца"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def set_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if len(args) != 3:
-        await update.message.reply_text(
-            "Формат: `/set Имя Банк Сумма`\n"
-            "Пример: `/set Кристина Приват 75000`",
-            parse_mode="Markdown"
-        )
+async def handle_turnover_mode(update, text, group, accounts, chat_id):
+    # Формат: "МТ +23500" или "МТ -11250" или "+23500 МТ"
+    pattern = r'([\wа-яёА-ЯЁ]+)\s+([+-]?\d+)|([+-]?\d+)\s+([\wа-яёА-ЯЁ]+)'
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
         return
 
-    data = load_data()
-    person, bank, amount_str = args[0], args[1], args[2]
+    if match.group(1):
+        name, amount_str = match.group(1), match.group(2)
+    else:
+        amount_str, name = match.group(3), match.group(4)
+
     amount = int(amount_str)
 
-    if person not in data:
-        await update.message.reply_text(f"❌ Не знаю такого имени: {person}")
-        return
-    if bank not in data[person]:
-        await update.message.reply_text(f"❌ У {person} нет банка {bank}")
+    found_name = None
+    for acc_name in accounts.keys():
+        if acc_name.lower() == name.lower():
+            found_name = acc_name
+            break
+
+    if not found_name:
         return
 
-    old_bal = data[person][bank]["баланс"]
-    data[person][bank]["баланс"] = amount
-    save_data(data)
+    old_bal = accounts[found_name]["баланс"]
+    old_turnover = accounts[found_name].get("оборот", 0)
+    new_bal = old_bal + amount
+    new_turnover = old_turnover + amount if amount > 0 else old_turnover
+
+    accounts[found_name]["баланс"] = new_bal
+    accounts[found_name]["оборот"] = new_turnover
+    group["accounts"] = accounts
+    save_group(chat_id, group)
+
+    sign = "+" if amount >= 0 else ""
+    turnover_line = f"📈 Оборот за месяц: `{format_number(new_turnover)}` грн\n" if amount > 0 else ""
 
     await update.message.reply_text(
-        f"✅ Баланс установлен!\n"
-        f"👤 {person} — {bank}\n"
+        f"✅ *Обновлено!*\n"
+        f"💳 {found_name}\n"
         f"Было: `{format_number(old_bal)}` грн\n"
-        f"Стало: `{format_number(amount)}` грн",
+        f"Изменение: `{sign}{format_number(amount)}` грн\n"
+        f"Стало: `{format_number(new_bal)}` грн\n"
+        f"{turnover_line}",
         parse_mode="Markdown"
     )
 
-async def set_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить лимит: /setlimit Кристина Приват 400000"""
+async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Настройка группы. /setup limits или /setup turnover"""
     args = context.args
-    if len(args) != 3:
+    if not args or args[0] not in ["limits", "turnover"]:
         await update.message.reply_text(
-            "Формат: `/setlimit Имя Банк Сумма`\n"
-            "Пример: `/setlimit Кристина Приват 400000`",
+            "Выберите режим группы:\n\n"
+            "/setup limits — балансы с лимитами\n"
+            "/setup turnover — балансы с оборотом",
             parse_mode="Markdown"
         )
         return
 
-    data = load_data()
-    limits = load_limits()
+    chat_id = update.effective_chat.id
+    mode = args[0]
+    group = get_group(chat_id) or {"mode": mode, "accounts": {}}
+    group["mode"] = mode
+    save_group(chat_id, group)
+
+    await update.message.reply_text(
+        f"✅ Режим установлен: *{'лимиты' if mode == 'limits' else 'оборот'}*\n\n"
+        f"Теперь добавьте участников:\n"
+        + ("`/addperson Имя`\nЗатем: `/addbank Имя Банк Лимит`" if mode == "limits" else "`/addaccount МТ 66740`"),
+        parse_mode="Markdown"
+    )
+
+async def addperson_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить участника: /addperson Кристина"""
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        await update.message.reply_text("❌ Сначала настройте группу: /setup limits")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Формат: `/addperson Имя`", parse_mode="Markdown")
+        return
+
+    person = args[0]
+    if person not in group["accounts"]:
+        group["accounts"][person] = {}
+        save_group(chat_id, group)
+        await update.message.reply_text(f"✅ Добавлен участник: *{person}*\nТеперь: `/addbank {person} Банк Лимит`", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"Участник {person} уже есть!")
+
+async def addbank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить банк: /addbank Кристина Приват 350000"""
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        await update.message.reply_text("❌ Сначала настройте группу: /setup limits")
+        return
+
+    args = context.args
+    if len(args) != 3:
+        await update.message.reply_text("Формат: `/addbank Имя Банк Лимит`\nПример: `/addbank Кристина Приват 350000`", parse_mode="Markdown")
+        return
+
+    person, bank, limit_str = args[0], args[1], args[2]
+    limit = int(limit_str)
+
+    if person not in group["accounts"]:
+        await update.message.reply_text(f"❌ Сначала добавьте участника: `/addperson {person}`", parse_mode="Markdown")
+        return
+
+    group["accounts"][person][bank] = {"баланс": 0, "лимит": limit, "лимит_макс": limit}
+    save_group(chat_id, group)
+    await update.message.reply_text(f"✅ Добавлен банк *{bank}* для *{person}*\nЛимит: `{format_number(limit)}` грн", parse_mode="Markdown")
+
+async def addaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить счёт для режима оборота: /addaccount МТ 66740"""
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        await update.message.reply_text("❌ Сначала настройте группу: /setup turnover")
+        return
+
+    args = context.args
+    if len(args) not in [1, 2]:
+        await update.message.reply_text("Формат: `/addaccount Название Баланс`\nПример: `/addaccount МТ 66740`", parse_mode="Markdown")
+        return
+
+    name = args[0]
+    balance = int(args[1]) if len(args) == 2 else 0
+    group["accounts"][name] = {"баланс": balance, "оборот": 0}
+    save_group(chat_id, group)
+    await update.message.reply_text(f"✅ Добавлен счёт *{name}*\nБаланс: `{format_number(balance)}` грн", parse_mode="Markdown")
+
+async def set_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить баланс"""
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        return
+
+    args = context.args
+    mode = group.get("mode", MODE_LIMITS)
+
+    if mode == MODE_LIMITS:
+        if len(args) != 3:
+            await update.message.reply_text("Формат: `/set Имя Банк Сумма`", parse_mode="Markdown")
+            return
+        person, bank, amount_str = args[0], args[1], args[2]
+        if person not in group["accounts"] or bank not in group["accounts"][person]:
+            await update.message.reply_text("❌ Не найдено!")
+            return
+        old = group["accounts"][person][bank]["баланс"]
+        group["accounts"][person][bank]["баланс"] = int(amount_str)
+        save_group(chat_id, group)
+        await update.message.reply_text(f"✅ Баланс {person} — {bank}\nБыло: `{format_number(old)}` → Стало: `{format_number(int(amount_str))}` грн", parse_mode="Markdown")
+    else:
+        if len(args) != 2:
+            await update.message.reply_text("Формат: `/set Название Сумма`", parse_mode="Markdown")
+            return
+        name, amount_str = args[0], args[1]
+        if name not in group["accounts"]:
+            await update.message.reply_text("❌ Не найдено!")
+            return
+        old = group["accounts"][name]["баланс"]
+        group["accounts"][name]["баланс"] = int(amount_str)
+        save_group(chat_id, group)
+        await update.message.reply_text(f"✅ Баланс {name}\nБыло: `{format_number(old)}` → Стало: `{format_number(int(amount_str))}` грн", parse_mode="Markdown")
+
+async def set_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить лимит: /setlimit Кристина Приват 400000"""
+    chat_id = update.effective_chat.id
+    group = get_group(chat_id)
+    if not group:
+        return
+
+    args = context.args
+    if len(args) != 3:
+        await update.message.reply_text("Формат: `/setlimit Имя Банк Сумма`", parse_mode="Markdown")
+        return
+
     person, bank, amount_str = args[0], args[1], args[2]
     amount = int(amount_str)
 
-    if person not in data:
-        await update.message.reply_text(f"❌ Не знаю такого имени: {person}")
-        return
-    if bank not in data[person]:
-        await update.message.reply_text(f"❌ У {person} нет банка {bank}")
+    if person not in group["accounts"] or bank not in group["accounts"][person]:
+        await update.message.reply_text("❌ Не найдено!")
         return
 
-    old_lim = limits.get(person, {}).get(bank, 0)
-
-    # Обновляем лимит в текущих данных и в дефолтных
-    data[person][bank]["лимит"] = amount
-    if person not in limits:
-        limits[person] = {}
-    limits[person][bank] = amount
-
-    save_data(data)
-    save_limits(limits)
+    old_lim = group["accounts"][person][bank]["лимит"]
+    group["accounts"][person][bank]["лимит"] = amount
+    group["accounts"][person][bank]["лимит_макс"] = amount
+    save_group(chat_id, group)
 
     await update.message.reply_text(
         f"✅ Лимит установлен!\n"
         f"👤 {person} — {bank}\n"
-        f"Было: `{format_number(old_lim)}` грн\n"
-        f"Стало: `{format_number(amount)}` грн\n"
-        f"🔄 Будет сбрасываться до `{format_number(amount)}` грн каждого 1-го числа",
+        f"Было: `{format_number(old_lim)}` → Стало: `{format_number(amount)}` грн\n"
+        f"🔄 Сброс 1-го числа каждого месяца",
         parse_mode="Markdown"
     )
 
-async def reset_limits(context: ContextTypes.DEFAULT_TYPE):
-    """Сбрасывает лимиты 1-го числа каждого месяца"""
-    data = load_data()
-    limits = load_limits()
-    for person in data:
-        for bank in data[person]:
-            if person in limits and bank in limits[person]:
-                data[person][bank]["лимит"] = limits[person][bank]
-    save_data(data)
-    logging.info("Лимиты сброшены!")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🤖 *Команды бота:*\n\n"
+        "*Настройка группы:*\n"
+        "/setup limits — режим с лимитами\n"
+        "/setup turnover — режим с оборотом\n"
+        "/addperson Имя — добавить участника\n"
+        "/addbank Имя Банк Лимит — добавить банк\n"
+        "/addaccount Название Баланс — добавить счёт\n\n"
+        "*Управление:*\n"
+        "/balance — показать балансы\n"
+        "/set — установить баланс\n"
+        "/setlimit Имя Банк Сумма — изменить лимит\n"
+        "/help — эта справка\n\n"
+        "*Обновление баланса:*\n"
+        "`-5596 Приват Кристина` — списание\n"
+        "`+5000 Приват Кристина` — пополнение\n"
+        "`МТ +23500` — для режима оборота\n\n"
+        "🔄 Лимиты/обороты сбрасываются 1-го числа"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def reset_monthly(context: ContextTypes.DEFAULT_TYPE):
+    """Сброс лимитов и оборотов 1-го числа"""
+    groups = load_groups()
+    for chat_id, group in groups.items():
+        mode = group.get("mode", MODE_LIMITS)
+        accounts = group.get("accounts", {})
+        if mode == MODE_LIMITS:
+            for person in accounts:
+                for bank in accounts[person]:
+                    max_lim = accounts[person][bank].get("лимит_макс", accounts[person][bank]["лимит"])
+                    accounts[person][bank]["лимит"] = max_lim
+        else:
+            for name in accounts:
+                accounts[name]["оборот"] = 0
+        group["accounts"] = accounts
+        groups[chat_id] = group
+    save_groups(groups)
+    logging.info("Лимиты и обороты сброшены!")
 
 def main():
     logging.basicConfig(level=logging.INFO)
@@ -280,12 +400,15 @@ def main():
 
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("setup", setup_command))
+    app.add_handler(CommandHandler("addperson", addperson_command))
+    app.add_handler(CommandHandler("addbank", addbank_command))
+    app.add_handler(CommandHandler("addaccount", addaccount_command))
     app.add_handler(CommandHandler("set", set_balance_command))
     app.add_handler(CommandHandler("setlimit", set_limit_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Сброс лимитов каждого 1-го числа в 00:01
-    app.job_queue.run_monthly(reset_limits, when=time(0, 1), day=1)
+    app.job_queue.run_monthly(reset_monthly, when=time(0, 1), day=1)
 
     print("Бот запущен!")
     app.run_polling()
