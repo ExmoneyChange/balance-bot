@@ -4,12 +4,27 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import re
 import json
 import os
+from datetime import time
 
 # Токен бота
 TOKEN = "8365170231:AAHM2Z0V0kgR_QDiFqegwb0fC_dSHAd5r2o"
 
 # Файл для хранения балансов
 DATA_FILE = "balances.json"
+
+# Начальные лимиты (для сброса каждого 1-го числа)
+DEFAULT_LIMITS = {
+    "Кристина": {
+        "Приват": 350000,
+        "Пумб": 100000,
+        "Райф": 146000,
+    },
+    "Артём": {
+        "Приват": 395000,
+        "Моно": 364000,
+        "Пумб": 150000,
+    }
+}
 
 # Начальные данные
 DEFAULT_DATA = {
@@ -46,9 +61,10 @@ def get_balance_text(data):
         for bank, info in banks.items():
             bal = info["баланс"]
             lim = info["лимит"]
-            used_pct = int((bal / lim) * 100)
+            default_lim = DEFAULT_LIMITS[person][bank]
+            used_pct = int(((default_lim - lim) / default_lim) * 100)
             bar = "🟢" if used_pct < 70 else "🟡" if used_pct < 90 else "🔴"
-            text += f"  {bar} {bank}: `{format_number(bal)}` грн (лимит {format_number(lim)}, {used_pct}%)\n"
+            text += f"  {bar} {bank}: `{format_number(bal)}` грн (лимит остаток {format_number(lim)}, {used_pct}% использовано)\n"
         text += "\n"
     return text
 
@@ -66,7 +82,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pattern = r'([+-]?\d+)\s+([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)|' \
               r'([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)\s+([+-]?\d+)'
-    
+
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return
@@ -109,14 +125,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     old_bal = data[found_person][found_bank]["баланс"]
+    old_lim = data[found_person][found_bank]["лимит"]
+
     new_bal = old_bal + amount
+
+    # Лимит уменьшается только при списании
+    if amount < 0:
+        new_lim = max(0, old_lim + amount)
+    else:
+        new_lim = old_lim
+
     data[found_person][found_bank]["баланс"] = new_bal
+    data[found_person][found_bank]["лимит"] = new_lim
     save_data(data)
 
-    lim = data[found_person][found_bank]["лимит"]
-    used_pct = int((new_bal / lim) * 100)
+    default_lim = DEFAULT_LIMITS[found_person][found_bank]
+    used_pct = int(((default_lim - new_lim) / default_lim) * 100)
     sign = "+" if amount >= 0 else ""
     bar = "🟢" if used_pct < 70 else "🟡" if used_pct < 90 else "🔴"
+
+    if amount < 0:
+        lim_line = f"📉 Лимит: `{format_number(old_lim)}` → `{format_number(new_lim)}` грн\n"
+    else:
+        lim_line = f"📊 Лимит остаток: `{format_number(new_lim)}` грн\n"
 
     await update.message.reply_text(
         f"✅ *Обновлено!*\n"
@@ -124,7 +155,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Было: `{format_number(old_bal)}` грн\n"
         f"Изменение: `{sign}{format_number(amount)}` грн\n"
         f"Стало: `{format_number(new_bal)}` грн\n"
-        f"{bar} Лимит: {format_number(lim)} ({used_pct}% использовано)",
+        f"{lim_line}"
+        f"{bar} Использовано лимита: {used_pct}%",
         parse_mode="Markdown"
     )
 
@@ -136,12 +168,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set Имя Банк Сумма — установить точный баланс\n\n"
         "*Как обновить баланс:*\n"
         "Напишите сумму + банк + имя\n\n"
-        "➕ Пополнение:\n"
+        "➕ Пополнение (только баланс):\n"
         "`+5000 Приват Кристина`\n\n"
-        "➖ Списание:\n"
+        "➖ Списание (баланс и лимит):\n"
         "`-5596 Приват Кристина`\n\n"
         "Или в другом порядке:\n"
-        "`Приват Кристина -5596`"
+        "`Приват Кристина -5596`\n\n"
+        "🔄 Лимит сбрасывается 1-го числа каждого месяца"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -179,6 +212,16 @@ async def set_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="Markdown"
     )
 
+async def reset_limits(context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает лимиты 1-го числа каждого месяца"""
+    data = load_data()
+    for person in data:
+        for bank in data[person]:
+            if person in DEFAULT_LIMITS and bank in DEFAULT_LIMITS[person]:
+                data[person][bank]["лимит"] = DEFAULT_LIMITS[person][bank]
+    save_data(data)
+    logging.info("Лимиты сброшены!")
+
 def main():
     logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(TOKEN).build()
@@ -187,6 +230,9 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("set", set_balance_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Сброс лимитов каждого 1-го числа в 00:01
+    app.job_queue.run_monthly(reset_limits, when=time(0, 1), day=1)
 
     print("Бот запущен!")
     app.run_polling()
