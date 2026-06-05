@@ -64,8 +64,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     data = load_data()
 
-    # Формат: "+5000 Приват Кристина" или "-5000 Приват Кристина"
-    # или "Приват Кристина +5000" или "Приват Кристина -5000"
     pattern = r'([+-]?\d+)\s+([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)|' \
               r'([\wа-яёА-ЯЁ]+)\s+([\wа-яёА-ЯЁ]+)\s+([+-]?\d+)'
     
@@ -84,7 +82,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     amount = int(amount_str)
 
-    # Определяем кто person а кто bank
     persons = list(data.keys())
     banks_all = []
     for p in persons:
@@ -134,8 +131,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🤖 *Команды бота:*\n\n"
-        "/баланс — показать все балансы\n"
-        "/помощь — эта справка\n\n"
+        "/balance — показать все балансы\n"
+        "/help — эта справка\n"
+        "/set Имя Банк Сумма — установить точный баланс\n\n"
         "*Как обновить баланс:*\n"
         "Напишите сумму + банк + имя\n\n"
         "➕ Пополнение:\n"
@@ -148,12 +146,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def set_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить точный баланс: /установить Кристина Приват 75000"""
+    """Установить точный баланс: /set Кристина Приват 75000"""
     args = context.args
     if len(args) != 3:
         await update.message.reply_text(
-            "Формат: `/установить Имя Банк Сумма`\n"
-            "Пример: `/установить Кристина Приват 75000`",
+            "Формат: `/set Имя Банк Сумма`\n"
+            "Пример: `/set Кристина Приват 75000`",
             parse_mode="Markdown"
         )
         return
@@ -185,11 +183,9 @@ def main():
     logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("баланс", balance_command))
     app.add_handler(CommandHandler("balance", balance_command))
-    app.add_handler(CommandHandler("помощь", help_command))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("установить", set_balance_command))
+    app.add_handler(CommandHandler("set", set_balance_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен!")
