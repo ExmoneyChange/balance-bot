@@ -6,7 +6,7 @@ import json
 import os
 from datetime import time
 
-TOKEN = "8365170231:AAHM2Z0V0kgR_QDiFqegwb0fC_dSHAd5r2o"
+TOKEN = "8365170231:AAHxRzOxJntWZsKKSqL2PRcwdqRKruBHafs"
 
 GROUPS_FILE = "/app/data/groups.json"
 
